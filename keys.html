@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Decrypt Private Keys</title>
+</head>
+<body>
+  <h1>Decrypt Private Keys</h1>
+  <p>Encrypted keys are loaded from <code>keys.json</code> or <code>.env</code> in the same directory.</p>
+  <label>Password: <input type="password" id="password" /></label>
+  <button id="decrypt">Decrypt</button>
+  <pre id="output"></pre>
+  <script>
+    async function loadConfig() {
+      const sources = ['keys.json', '.env'];
+      for (const src of sources) {
+        try {
+          const res = await fetch(src);
+          if (!res.ok) continue;
+          if (src.endsWith('.json')) {
+            return res.json();
+          } else {
+            const text = await res.text();
+            const keys = [];
+            for (const line of text.split('\n')) {
+              const match = line.match(/^KEY_[^=]+=([^:]+):(.+)$/);
+              if (match) {
+                keys.push({ iv: match[1].trim(), data: match[2].trim() });
+              }
+            }
+            if (keys.length) return { keys };
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+      return null;
+    }
+
+    async function deriveKey(password, salt) {
+      const enc = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+      );
+      return crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt: enc.encode(salt), iterations: 100000, hash: 'SHA-256' },
+        keyMaterial,
+        { name: 'AES-GCM', length: 256 },
+        false,
+        ['decrypt']
+      );
+    }
+
+    async function decrypt() {
+      const output = document.getElementById('output');
+      output.textContent = '';
+      const config = await loadConfig();
+      if (!config) {
+        output.textContent = 'No config file found.';
+        return;
+      }
+      const password = document.getElementById('password').value;
+      const results = [];
+      for (const k of config.keys) {
+        try {
+          const key = await deriveKey(password, k.salt || '');
+          const iv = Uint8Array.from(atob(k.iv), c => c.charCodeAt(0));
+          const data = Uint8Array.from(atob(k.data), c => c.charCodeAt(0));
+          const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+          results.push(new TextDecoder().decode(decrypted));
+        } catch (err) {
+          results.push('Error decrypting key: ' + err.message);
+        }
+      }
+      output.textContent = results.join('\n');
+    }
+
+    document.getElementById('decrypt').addEventListener('click', decrypt);
+  </script>
+</body>
+</html>
